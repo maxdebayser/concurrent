@@ -8,68 +8,58 @@
 #include <memory>
 #include <deque>
 #include <exception/Exception.h>
+#include <tuple>
 
-class ThreadPool: public QObject
+
+class Task {
+public:
+    virtual ~Task() {}
+    virtual void run() = 0;
+    virtual void cancel(ExceptionLib::ExceptionBase*) = 0;
+};
+typedef std::shared_ptr<Task> Work;
+
+template<class R>
+struct LambdaTask: public Task {
+    std::promise<R> promise;
+
+    std::function<R()> m_f;
+
+    LambdaTask(std::function<R()> f) : m_f(f) {}
+
+    virtual void run() {
+        promise.set_value(m_f());
+    }
+
+    virtual void cancel(std::exception_ptr ex) {
+        promise.set_exception(ex);
+    }
+};
+
+template<>
+struct LambdaTask<void>: public Task {
+    std::promise<void> promise;
+
+    std::function<void()> m_f;
+
+    LambdaTask(std::function<void()> f) : m_f(f) {}
+
+    virtual void run() {
+        m_f();
+        promise.set_value();
+    }
+
+    virtual void cancel(std::exception_ptr ex) {
+        promise.set_exception(ex);
+    }
+};
+
+
+class ThreadPool
 {
-Q_OBJECT
 public:
 
-	class Task {
-	public:
-		virtual ~Task() {}
-		virtual void run() = 0;
-		virtual void cancel(ExceptionLib::ExceptionBase*) = 0;
-	};
-    typedef std::shared_ptr<Task> Work;
 
-	template<class R, class C, class A1>
-	struct MethodTask1Arg: public Task {
-        std::promise<R> promise;
-		typedef R (C::*memptr)(A1);
-
-		C* object;
-		memptr ptr;
-		A1 a1;
-
-		MethodTask1Arg(C* o, memptr p, A1 _a1) : object(o), ptr(p), a1(_a1) {}
-
-		virtual void run() {
-            promise.set_value((object->*ptr)(a1));
-		}
-
-        virtual void cancel(std::exception_ptr ex) {
-            promise.set_exception(ex);
-		}
-	};
-
-	template<class C, class A1>
-	struct MethodTask1Arg<void, C, A1>: public Task {
-        std::promise<void> promise;
-		typedef void (C::*memptr)(A1);
-
-		C* object;
-		memptr ptr;
-		A1 a1;
-
-		MethodTask1Arg(C* o, memptr p, A1 _a1) : object(o), ptr(p), a1(_a1) {}
-
-		virtual void run() {
-			(object->*ptr)(a1);
-            promise.set_value();
-		}
-
-        virtual void cancel(std::exception_ptr ex) {
-            promise.set_exception(ex);
-        }
-	};
-
-	template<class R, class C, class A1>
-    std::future<R> run(C* object, R (C::*memptr)(A1), A1 a1) {
-        std::shared_ptr<MethodTask1Arg<R,C,A1> > w(new MethodTask1Arg<R,C,A1>(object, memptr, a1));
-        std::future<R> f = w->promise.get_future();
-		m_work.push(w);
-		return f;
-	}
 
 	ThreadPool(int size);
 
@@ -78,6 +68,16 @@ public:
 	void pushWork(Work w);
 
 	void finish();
+
+
+
+    template<class R>
+    std::future<R> run(std::function<R()> func) {
+        std::shared_ptr<LambdaTask<R>> w(new LambdaTask<R>(func));
+        std::future<R> f = w->promise.get_future();
+        m_work.push(w);
+        return f;
+    }
 
 private:	
 
